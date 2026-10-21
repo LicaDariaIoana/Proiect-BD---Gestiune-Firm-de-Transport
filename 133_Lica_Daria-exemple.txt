@@ -1,0 +1,138 @@
+--ex 12
+--Supunctul a: să se afișeze numărul liniei, tipul ei, modelul si anul de fabricare celui mai nou vehicul cu care este programat într-o tura linia, pentru toate liniile care au stație in uniri. 
+
+SELECT l.numar_linie, tl.tip_linie, v.model, v.an_fabricare
+FROM linii l
+JOIN tip_linie tl ON l.cod_tip_linie = tl.cod_tip_linie
+JOIN ture tu ON l.cod_linie = tu.cod_linie
+JOIN vehicule v ON tu.cod_vehicul = v.cod_vehicul
+WHERE  v.an_fabricare = (SELECT MAX(v1.an_fabricare)
+                         FROM vehicule v1
+                         JOIN ture tu1 ON v1.cod_vehicul = tu1.cod_vehicul
+                         JOIN traseu tr ON tu1.cod_linie = tr.cod_linie
+                         JOIN statii s ON tr.cod_statie = s.cod_statie
+                         WHERE tu1.cod_linie = l.cod_linie AND LOWER(s.nume_statie) LIKE '%uniri%');
+
+
+--Subpunctul  d si e: se afișează, pentru fiecare client, numele complet scris cu majuscule, statusul celei mai recente achiziții (valabil/expirat/neexistent) și vârsta (determinată din CNP). Rezultatul sa fie ordonat descrescător, după statusul abonamentului.
+
+SELECT UPPER(c.nume) || ' ' || UPPER(c.prenume) AS Nume_Client, 
+	NVL(DECODE(SIGN(MAX(a.data_expirare) - SYSDATE), 1, 'valabil',0, 'valabil',-1, 'expirat'),'neexistent') AS "status abonament",
+	TRUNC(MONTHS_BETWEEN(SYSDATE, TO_DATE(
+		CASE WHEN SUBSTR(c.cnp, 1, 1) IN ('5', '6') THEN '20'
+                    			WHEN SUBSTR(c.cnp, 1, 1) IN ('1', '2') THEN '19'
+                    			ELSE '18' END || SUBSTR(c.cnp, 2, 6), 'YYYYMMDD')) / 12) AS varsta
+FROM CLIENTI c
+LEFT JOIN ABONAMENTE a ON c.cod_client = a.cod_client
+GROUP BY c.cod_client, c.nume, c.prenume, c.cnp
+ORDER BY  "status abonament" DESC;
+
+--Subpunctul f: să se afișează numele și prenumele șoferilor, data expirării permisului și numărul de luni rămase până la expirare, pentru șoferii care câștiga mai mult decât media tuturor angajaților. Pt fiecare șofer, sa se semnaleze daca expira încurând permisul (mai puțin de un an) sau daca e deja expirat.
+
+WITH sal_mediu AS (SELECT AVG(salariu) as medie_generala
+                   FROM angajati)
+SELECT UPPER(a.nume) || ' ' || a.prenume AS "nume" , a.salariu,
+       CASE WHEN s.expirare_permis < SYSDATE THEN 'PERMIS EXPIRAT'
+            WHEN s.expirare_permis < ADD_MONTHS(SYSDATE, 6) THEN 'PERMIS EXPIRA INCURAND'
+            ELSE 'PERMIS VALID' END AS "permis"
+            ROUND(MONTHS_BETWEEN(s.expirare_permis, SYSDATE)) AS "luni rămase"
+FROM angajați a
+JOIN soferi s ON a.cod_angajat = s.cod_angajat
+JOIN joburi j ON a.cod_job = j.cod_job
+JOIN sal_mediu sm ON a.salariu > sm.medie_generala
+ORDER BY a.salariu DESC;
+
+--Subpunctul c: să se afișeze numele, prenumele și numărul total de ture pentru șoferii care au lucrat în mai multe ture decât media pentru șoferii care conduc vehicul de tip autobuz.
+
+SELECT a.nume, a.prenume, COUNT(t.cod_angajat) AS "numar ture"
+FROM angajati a
+JOIN soferi s ON a.cod_angajat = s.cod_angajat
+JOIN ture t ON s.cod_angajat = t.cod_angajat
+GROUP BY a.cod_angajat, a.nume, a.prenume
+HAVING COUNT(t.cod_angajat) >(
+    SELECT AVG(COUNT(t1.cod_angajat))
+    FROM ture t1
+    JOIN vehicule v ON t1.cod_vehicul = v.cod_vehicul
+    JOIN tipuri_vehicul tv ON v.cod_tip_vehicul = tv.cod_tip_vehicul
+    WHERE UPPER(tv.tip_vehicul) = 'AUTOBUZ'
+
+--Subpunctul b: se afișează vehiculele companiei, modelul lor (primele 5 caractere scrise cu majuscule), tipul lor și numărul de exemplare disponibile, ordonate descrescător după numărul de unități pentru modelele cu mai mult de un exemplar. 
+
+SELECT prescurtare AS "model", tp AS "tip vehicul", nr AS "numar_modele"
+FROM (SELECT UPPER(SUBSTR(v.model, 1, 5)) AS prescurtare, t.tip_vehicul AS tp, COUNT(v.cod_vehicul) AS nr
+      FROM VEHICULE v
+      JOIN tipuri_vehicul t ON v.cod_tip_vehicul = t.cod_tip_vehicul
+      GROUP BY v.model, t.tip_vehicul)
+WHERE nr>1
+ORDER BY "numar_modele" DESC;
+
+--13
+--Operație de actualizare: să se mărească cu 10% salariul tuturor șoferilor care au fost programați în cel puțin o tură de lucru pe linia cu numărul '41'.
+
+UPDATE ANGAJATI
+SET salariu = salariu * 1.10
+WHERE cod_angajat IN (
+    SELECT t.cod_angajat
+    FROM TURE t
+    JOIN LINII l ON t.cod_linie = l.cod_linie
+    WHERE l.numar_linie = '41'); 
+-- Operație de suprimare :  Se ștearge din baza de date toți clienții care și-au creat un cont dar nu au achiziționat niciodată un abonament.
+
+DELETE FROM CLIENTI
+WHERE cod_client NOT IN (
+    SELECT cod_client 
+    FROM ABONAMENTE
+    WHERE cod_client IS NOT NULL);
+
+--Operație de actualizare:  să se prelungească cu 7 zile data de expirare a tuturor abonamentelor active care au acces la linia expres.
+UPDATE ABONAMENTE
+SET data_expirare = data_expirare + 7
+WHERE data_expirare>SYSDATE And cod_abonament IN (
+    SELECT a.cod_abonament
+    FROM nivel_acces a
+JOIN tip_linie t ON t.cod_tip_linie = a.cod_tip_linie
+    WHERE LOWER(tip_linie) ='expres');
+
+--14 sa se creeze o vizualizare cu codul, numele și prenumele, salariul si data de expirare a permisului pentru toți șoferii.
+
+CREATE OR REPLACE VIEW v_soferi_info AS
+SELECT a.cod_angajat, a.nume, a.prenume, a.salariu, s.expirare_permis
+FROM angajati a
+JOIN soferi s ON a.cod_angajat = s.cod_angajat;
+
+--Exemplu de operație LMD nepermisa este inserarea uni linii cu valori din două tabele separate:
+INSERT INTO v_soferi_info VALUES (200, 'Popa', 'Andrei', 4000, TO_DATE('01-01-2030', 'DD-MM-YYYY'));
+
+
+--Un exemplu de opersatie LMD permisa este actualizarea salariului uniu sofer:
+UPDATE v_soferi_info SET salariu = salariu + 100 WHERE nume = 'Pavel';
+
+
+--15
+--Outer join: Afișați, pentru toți clienți cu abonamente active, numele lor, id abonamentului si tipul de linie la care au acces cu acel abonament. (o cerere ce utilizează operația outer join pe minimum 4 tabele)
+
+SELECT c.nume || ' ' || c.prenume AS nume, a.cod_abonament as "numar abonament ", tl.tip_linie AS "nivel de acces"
+FROM clienti c
+LEFT JOIN abonamente a ON c.cod_client = a.cod_client
+LEFT JOIN nivel_acces na ON a.cod_abonament = na.cod_abonament
+LEFT JOIN tip_linie tl ON na.cod_tip_linie = tl.cod_tip_linie
+WHERE a.data_expirare > sysdate
+ORDER BY nume; 
+ 
+
+--Division: afișați toți șoferi care pot conduce toate vehiculele noi, noii fiind cel produse începând cu 2024.(cerere ce utilizează operația division)
+
+SELECT cod_angajat 
+FROM categorii_permise 
+WHERE cod_tip_vehicul IN (SELECT DISTINCT cod_tip_vehicul FROM VEHICULE WHERE an_fabricare >= 2024)
+GROUP BY cod_angajat 
+HAVING COUNT(DISTINCT cod_tip_vehicul) = (SELECT COUNT(DISTINCT cod_tip_vehicul) FROM VEHICULE WHERE an_fabricare >= 2024);
+ 
+
+--Analiza top-n: afișați primi 3 cei mai bine plătiți șoferi (analiza top-n).
+
+SELECT * 
+FROM (SELECT a.nume, a.prenume, a.salariu
+      FROM angajati a
+      JOIN soferi s ON a.cod_angajat = s.cod_angajat
+      ORDER BY a.salariu DESC) WHERE ROWNUM <= 3;
